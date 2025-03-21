@@ -1,0 +1,141 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap");
+
+:root {
+  --primary-color: #2a2e5d;
+  --secondary-color: #f5f5fa;
+  --text-color: #2e2e2e;
+  --background-color: #f8f9fc;
+  --border-color: #d1d1e0;
+  --box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.1);
+}
+
+.container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background-color: var(--background-color);
+  font-family: "Inter", sans-serif;
+  padding: 30px;
+}
+
+.checkoutBox {
+  width: 90%;
+  max-width: 850px;
+  background: #ffffff;
+  border-radius: 15px;
+  box-shadow: var(--box-shadow);
+  padding: 35px;
+  transition: 0.3s ease-in-out;
+}
+
+
+
+.title {
+    font-size: 2rem;
+    color: var(--text-color, #333);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+
+.section {
+  background: var(--secondary-color);
+  border-radius: 12px;
+  padding: 25px;
+  margin-bottom: 20px;
+  border: 1px solid var(--border-color);
+}
+
+.section h3 {
+  font-size: 1.3rem;
+  font-weight: 500;
+  color: var(--primary-color);
+  margin-bottom: 15px;
+}
+
+.inputGroup {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.inputGroup input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 1rem;
+  background-color: #ffffff;
+  transition: 0.2s ease;
+}
+
+.inputGroup input:focus {
+  border-color: var(--primary-color);
+  box-shadow: 0px 0px 8px rgba(42, 46, 93, 0.3);
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  margin-top: 12px;
+  font-size: 1rem;
+  gap: 10px;
+}
+
+.summarySection {
+  background: #ffffff;
+  padding: 25px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  box-shadow: var(--box-shadow);
+}
+
+.orderSummary {
+  margin-bottom: 20px;
+}
+
+.orderSummary p {
+  display: flex;
+  justify-content: space-between;
+  font-size: 1rem;
+  margin-bottom: 10px;
+  font-weight: 500;
+}
+
+.total {
+  font-weight: 700;
+  font-size: 1.3rem;
+  color: var(--primary-color);
+}
+
+.proceedBtn {
+  width: 100%;
+  padding: 14px;
+  background: var(--primary-color);
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: 0.3s ease-in-out;
+}
+
+.proceedBtn:hover {
+  background: #1e2248;
+}
+
+.lockIcon {
+  font-size: 1.2rem;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .inputGroup {
+    grid-template-columns: 1fr;
+  }
+}
