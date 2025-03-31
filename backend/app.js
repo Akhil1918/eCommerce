@@ -68,8 +68,11 @@ const typingUsers = new Map(); // Track who is typing in which chat
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth.token;
-    if (!token) {
-      return next(new Error('Authentication error: Token not provided'));
+    const userId = socket.handshake.auth.userId;
+    const role = socket.handshake.auth.role;
+
+    if (!token || !userId || !role) {
+      return next(new Error('Authentication error: Missing required credentials'));
     }
 
     // Verify JWT token
@@ -78,9 +81,20 @@ io.use(async (socket, next) => {
         return next(new Error('Authentication error: Invalid token'));
       }
       
+      // Verify user ID matches
+      if (decoded.id !== userId) {
+        return next(new Error('Authentication error: User ID mismatch'));
+      }
+
+      // Verify role matches
+      if (decoded.role !== role) {
+        return next(new Error('Authentication error: Role mismatch'));
+      }
+      
       // Store user info in socket object
-      socket.userId = decoded.id;
+      socket.userId = userId;
       socket.userName = decoded.name;
+      socket.userRole = role;
       next();
     });
   } catch (error) {
@@ -90,7 +104,7 @@ io.use(async (socket, next) => {
 
 // Socket.io event handling
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.userId}`);
+  console.log(`User connected: ${socket.userId} (${socket.userRole})`);
   
   // Add user to active users map
   activeUsers.set(socket.userId, socket.id);
@@ -111,21 +125,36 @@ io.on('connection', (socket) => {
           return;
         }
         
-        // Store user info in socket object
-        socket.userId = decoded.id;
-        socket.userName = decoded.name;
+        // Verify user ID matches
+        if (decoded.id !== socket.userId) {
+          socket.emit('authenticated', {
+            success: false,
+            error: 'User ID mismatch'
+          });
+          return;
+        }
+
+        // Verify role matches
+        if (decoded.role !== socket.userRole) {
+          socket.emit('authenticated', {
+            success: false,
+            error: 'Role mismatch'
+          });
+          return;
+        }
         
         // Confirm authentication
         socket.emit('authenticated', { 
           success: true,
           userId: decoded.id,
-          userName: decoded.name
+          userName: decoded.name,
+          role: decoded.role
         });
         
         // Send online users list
         socket.emit('onlineUsers', Array.from(activeUsers.keys()));
         
-        console.log(`User authenticated: ${decoded.name} (${decoded.id})`);
+        console.log(`User authenticated: ${decoded.name} (${decoded.id}) - ${decoded.role}`);
       });
     } catch (error) {
       socket.emit('authenticated', { 

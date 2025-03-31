@@ -51,37 +51,59 @@ const Orders = () => {
   const checkAndUpdateOrderStatus = (order) => {
     const now = new Date();
     const orderDate = new Date(order.createdAt);
-    const hoursSinceOrder = (now - orderDate) / (1000 * 60 * 60);
+    const estimatedDelivery = new Date(order.estimatedDeliveryDate);
     
-    // Define time thresholds for status transitions (in hours)
-    const STATUS_THRESHOLDS = {
-      pending: 2,      // Move from pending after 2 hours
-      processing: 12,  // Move from processing after 12 hours
-      shipped: 48,     // Move from shipped after 48 hours
-    };
-    
-    let newStatus = order.status;
-    
-    // Only update if the order is not cancelled or delivered
-    if (!['cancelled', 'delivered'].includes(order.status.toLowerCase())) {
-      if (order.status === 'pending' && hoursSinceOrder >= STATUS_THRESHOLDS.pending) {
-        newStatus = 'processing';
-      } else if (order.status === 'processing' && hoursSinceOrder >= STATUS_THRESHOLDS.processing) {
-        newStatus = 'shipped';
-      } else if (order.status === 'shipped' && hoursSinceOrder >= STATUS_THRESHOLDS.shipped) {
-        newStatus = 'delivered';
-      }
-      
-      // If status needs to be updated
-      if (newStatus !== order.status) {
-        return {
-          ...order,
-          status: newStatus,
-          lastUpdated: now.toISOString()
-        };
-      }
+    // If order is cancelled, keep it cancelled
+    if (order.status.toLowerCase() === 'cancelled') {
+      return order;
     }
-    
+
+    // If payment is completed (has razorpayPaymentId), start with processing
+    if (order.razorpayPaymentId && order.status.toLowerCase() === 'pending') {
+      return {
+        ...order,
+        status: 'processing',
+        lastUpdated: now.toISOString()
+      };
+    }
+
+    // If current time is past estimated delivery, mark as delivered
+    if (now >= estimatedDelivery) {
+      return {
+        ...order,
+        status: 'delivered',
+        lastUpdated: now.toISOString()
+      };
+    }
+
+    // Calculate progress percentage (0 to 1)
+    const totalTime = estimatedDelivery.getTime() - orderDate.getTime();
+    const elapsedTime = now.getTime() - orderDate.getTime();
+    const progressPercentage = elapsedTime / totalTime;
+
+    // Define status thresholds
+    let newStatus;
+    if (progressPercentage < 0.2) {
+      newStatus = 'pending';
+    } else if (progressPercentage < 0.4) {
+      newStatus = 'processing';
+    } else if (progressPercentage < 0.6) {
+      newStatus = 'shipped';
+    } else if (progressPercentage < 0.8) {
+      newStatus = 'in transit';
+    } else {
+      newStatus = 'out for delivery';
+    }
+
+    // Only update if status has changed
+    if (newStatus !== order.status) {
+      return {
+        ...order,
+        status: newStatus,
+        lastUpdated: now.toISOString()
+      };
+    }
+
     return order;
   };
   
@@ -221,7 +243,7 @@ const Orders = () => {
   }, []);
   
   // Get status badge component with improved status handling
-  const getStatusBadge = (status) => {
+  const getStatusBadge = (order) => {
     const statusConfig = {
       "pending": { 
         color: "bg-yellow-100 text-yellow-800", 
@@ -231,7 +253,7 @@ const Orders = () => {
       "processing": { 
         color: "bg-blue-100 text-blue-800", 
         icon: <FaSpinner className="mr-1 animate-spin" />,
-        label: "Processing"
+        label: "Order Processing"
       },
       "shipped": { 
         color: "bg-indigo-100 text-indigo-800", 
@@ -249,12 +271,18 @@ const Orders = () => {
         label: "Cancelled"
       }
     };
-    
-    const config = statusConfig[status.toLowerCase()] || { 
-      color: "bg-gray-100 text-gray-800", 
-      icon: <FaInfoCircle className="mr-1" />,
-      label: status
-    };
+
+    let config;
+    // If payment is successful (has razorpayPaymentId), show processing instead of pending
+    if (order.status.toLowerCase() === 'pending' && order.razorpayPaymentId) {
+      config = statusConfig["processing"];
+    } else {
+      config = statusConfig[order.status.toLowerCase()] || { 
+        color: "bg-gray-100 text-gray-800", 
+        icon: <FaInfoCircle className="mr-1" />,
+        label: order.status
+      };
+    }
     
     return (
       <span className={`flex items-center text-xs font-medium px-2.5 py-0.5 rounded-full ${config.color}`}>
@@ -275,37 +303,62 @@ const Orders = () => {
     }
   };
   
-  // Calculate delivery progress with better handling
-  const getDeliveryProgress = (orderDate, status) => {
-    if (status === 'cancelled') return 0;
-    if (status === 'delivered') return 100;
+  // Update the delivery progress calculation
+  const getDeliveryProgress = (orderDate, status, estimatedDeliveryDate) => {
+    if (status.toLowerCase() === 'cancelled') return 0;
+    if (status.toLowerCase() === 'delivered') return 100;
     
     const now = new Date();
     const start = new Date(orderDate);
-    const end = getEstimatedDelivery(orderDate);
+    const end = new Date(estimatedDeliveryDate);
     
+    // If past estimated delivery date, return 100%
     if (now >= end) return 100;
     
+    // Calculate progress percentage
     const total = end.getTime() - start.getTime();
-    const progress = now.getTime() - start.getTime();
-    return Math.min(Math.round((progress / total) * 100), 100);
+    const elapsed = now.getTime() - start.getTime();
+    const percentage = Math.min((elapsed / total) * 100, 100);
+    
+    // Map status to minimum progress thresholds
+    const statusThresholds = {
+      'pending': 0,
+      'processing': 20,
+      'shipped': 40,
+      'in transit': 60,
+      'out for delivery': 80
+    };
+    
+    // Get minimum progress for current status
+    const minProgress = statusThresholds[status.toLowerCase()] || 0;
+    
+    // Return the higher of calculated progress or status minimum
+    return Math.max(Math.round(percentage), minProgress);
   };
 
-  // Get delivery status text and icon with improved status handling
-  const getDeliveryStatus = (progress, status) => {
-    if (status === 'cancelled') {
+  // Update the delivery status calculation
+  const getDeliveryStatus = (progress, status, estimatedDeliveryDate) => {
+    const now = new Date();
+    const delivery = new Date(estimatedDeliveryDate);
+    
+    if (status.toLowerCase() === 'cancelled') {
       return { text: "Cancelled", icon: <FaRedo className="text-red-500" /> };
     }
     
-    if (status === 'delivered') {
+    // Only show as delivered if explicitly marked as delivered or past delivery date
+    if (status.toLowerCase() === 'delivered' || now >= delivery) {
       return { text: "Delivered", icon: <FaHome className="text-green-500" /> };
     }
     
-    if (progress === 100) return { text: "Delivered", icon: <FaHome className="text-green-500" /> };
-    if (progress >= 75) return { text: "Out for Delivery", icon: <FaTruck className="text-blue-500" /> };
-    if (progress >= 50) return { text: "In Transit", icon: <FaRoute className="text-indigo-500" /> };
-    if (progress >= 25) return { text: "Shipped", icon: <FaShippingFast className="text-purple-500" /> };
-    return { text: "Processing", icon: <FaWarehouse className="text-yellow-500" /> };
+    const statusMap = {
+      'pending': { text: "Pending", icon: <FaWarehouse className="text-yellow-500" /> },
+      'processing': { text: "Processing", icon: <FaWarehouse className="text-yellow-500" /> },
+      'shipped': { text: "Shipped", icon: <FaShippingFast className="text-purple-500" /> },
+      'in transit': { text: "In Transit", icon: <FaRoute className="text-indigo-500" /> },
+      'out for delivery': { text: "Out for Delivery", icon: <FaTruck className="text-blue-500" /> }
+    };
+    
+    return statusMap[status.toLowerCase()] || { text: "Processing", icon: <FaWarehouse className="text-yellow-500" /> };
   };
   
   // Filter orders with improved search
@@ -330,14 +383,6 @@ const Orders = () => {
     return order.items.reduce((total, item) => total + item.quantity, 0);
   };
   
-  // Calculate estimated delivery date (random between 3-8 days)
-  const getEstimatedDelivery = (orderDate) => {
-    const deliveryDate = new Date(orderDate);
-    const randomDays = Math.floor(Math.random() * 6) + 3; // Random number between 3-8
-    deliveryDate.setDate(deliveryDate.getDate() + randomDays);
-    return deliveryDate;
-  };
-
   // Add downloadInvoice function
   const downloadInvoice = async (orderId) => {
     try {
@@ -522,15 +567,25 @@ const Orders = () => {
                             <p className="text-sm text-gray-500">{formatTime(order.createdAt)}</p>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            {getStatusBadge(order.status)}
+                            {getStatusBadge(order)}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <p className="font-medium text-gray-800">
-                              {formatDate(getEstimatedDelivery(order.createdAt))}
+                              {formatDate(order.estimatedDeliveryDate)}
                             </p>
                             <p className="text-sm text-gray-500 flex items-center">
-                              {getDeliveryStatus(getDeliveryProgress(order.createdAt, order.status), order.status).icon}
-                              <span className="ml-1">{getDeliveryStatus(getDeliveryProgress(order.createdAt, order.status), order.status).text}</span>
+                              {getDeliveryStatus(
+                                getDeliveryProgress(order.createdAt, order.status, order.estimatedDeliveryDate),
+                                order.status,
+                                order.estimatedDeliveryDate
+                              ).icon}
+                              <span className="ml-1">
+                                {getDeliveryStatus(
+                                  getDeliveryProgress(order.createdAt, order.status, order.estimatedDeliveryDate),
+                                  order.status,
+                                  order.estimatedDeliveryDate
+                                ).text}
+                              </span>
                             </p>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap font-medium">
@@ -764,11 +819,16 @@ const Orders = () => {
                       <span className="font-medium">Date:</span> {formatDate(selectedOrder.createdAt)}
                     </p>
                     <p className="text-sm">
-                      <span className="font-medium">Status:</span> {getStatusBadge(selectedOrder.status)}
+                      <span className="font-medium">Status:</span> {getStatusBadge(selectedOrder)}
                     </p>
                     <p className="text-sm">
-                      <span className="font-medium">Payment Method:</span> {selectedOrder.paymentMethod}
+                      <span className="font-medium">Payment Method:</span> {selectedOrder.razorpayPaymentId ? 'Razorpay' : 'Pending Payment'}
                     </p>
+                    {selectedOrder.razorpayPaymentId && (
+                      <p className="text-sm text-green-600">
+                        <FaCheck className="inline mr-1" /> Payment Completed
+                      </p>
+                    )}
                   </div>
                 </div>
                 
@@ -865,13 +925,13 @@ const Orders = () => {
                     <div className="flex items-center space-x-2">
                       <FaCalendarAlt className="text-gray-400" />
                       <span className="text-sm font-medium text-gray-700">
-                        Estimated Delivery: {formatDate(getEstimatedDelivery(selectedOrder.createdAt))}
+                        Estimated Delivery: {formatDate(selectedOrder.estimatedDeliveryDate)}
                       </span>
                     </div>
                     <div className="flex items-center space-x-2">
                       <FaBoxOpen className="text-primary" />
                       <span className="text-sm font-medium text-primary">
-                        {getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status)}% Complete
+                        {getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status, selectedOrder.estimatedDeliveryDate)}% Complete
                       </span>
                     </div>
                   </div>
@@ -884,27 +944,19 @@ const Orders = () => {
                         className="h-full bg-gradient-to-r from-primary to-primary-dark transition-all duration-1000 ease-out"
                         style={{ 
                           width: (() => {
-                            // Calculate width based on order status
                             if (selectedOrder.status.toLowerCase() === 'cancelled') {
-                              return '0%'; // No progress for cancelled orders
+                              return '0%';
                             }
                             
                             if (selectedOrder.status.toLowerCase() === 'delivered') {
-                              return '100%'; // Full progress for delivered orders
+                              return '100%';
                             }
                             
-                            // Get delivery status from our helper function
-                            const progress = getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status);
-                            const statusText = getDeliveryStatus(progress, selectedOrder.status).text.toLowerCase();
-                            
-                            // Map status to specific progress percentages
-                            if (statusText === 'processing') return '0%';
-                            if (statusText === 'shipped') return '25%';
-                            if (statusText === 'in transit') return '50%';
-                            if (statusText === 'out for delivery') return '75%';
-                            if (statusText === 'delivered') return '100%';
-                            
-                            // Fallback to calculated percentage
+                            const progress = getDeliveryProgress(
+                              selectedOrder.createdAt,
+                              selectedOrder.status,
+                              selectedOrder.estimatedDeliveryDate
+                            );
                             return `${progress}%`;
                           })()
                         }}
@@ -934,8 +986,12 @@ const Orders = () => {
                           isActive = status === 'delivered';
                         } else {
                           // Otherwise, determine based on progress percentage and status mapping
-                          const progress = getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status);
-                          const deliveryStatus = getDeliveryStatus(progress, selectedOrder.status).text.toLowerCase().replace(/\s+/g, '-');
+                          const progress = getDeliveryProgress(
+                            selectedOrder.createdAt,
+                            selectedOrder.status,
+                            selectedOrder.estimatedDeliveryDate
+                          );
+                          const deliveryStatus = getDeliveryStatus(progress, selectedOrder.status, selectedOrder.estimatedDeliveryDate).text.toLowerCase().replace(/\s+/g, '-');
                           
                           if (status === 'processing') {
                             // Processing is always completed unless cancelled
@@ -988,16 +1044,24 @@ const Orders = () => {
                   <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
                     <div className="flex items-center space-x-3">
                       <div className="text-2xl">
-                        {getDeliveryStatus(getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status), selectedOrder.status).icon}
+                        {getDeliveryStatus(
+                          getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status, selectedOrder.estimatedDeliveryDate),
+                          selectedOrder.status,
+                          selectedOrder.estimatedDeliveryDate
+                        ).icon}
                       </div>
                       <div>
                         <p className="text-sm font-medium text-gray-800">
-                          {getDeliveryStatus(getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status), selectedOrder.status).text}
+                          {getDeliveryStatus(
+                            getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status, selectedOrder.estimatedDeliveryDate),
+                            selectedOrder.status,
+                            selectedOrder.estimatedDeliveryDate
+                          ).text}
                         </p>
                         <p className="text-xs text-gray-500">
-                          {getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status) === 100
+                          {getDeliveryProgress(selectedOrder.createdAt, selectedOrder.status, selectedOrder.estimatedDeliveryDate) === 100
                             ? "Your order has been delivered successfully"
-                            : `Expected delivery by ${formatDate(getEstimatedDelivery(selectedOrder.createdAt))}`}
+                            : `Expected delivery by ${formatDate(selectedOrder.estimatedDeliveryDate)}`}
                         </p>
                       </div>
                     </div>

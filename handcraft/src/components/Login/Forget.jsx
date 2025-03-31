@@ -107,9 +107,24 @@ const ForgetPassword = () => {
       });
       
       if (response.data.success) {
-        setSuccess("Password reset successfully!");
+        setSuccess("Password reset successfully! Please login with your new password.");
+        
+        // Clear auth token and user data
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('userRole');
+        localStorage.removeItem('userId');
+        
+        // Clear any other stored data
+        sessionStorage.clear();
+        
+        // Redirect to login page after a short delay
         setTimeout(() => {
-          navigate("/login");
+          navigate("/login", { 
+            state: { 
+              message: "Password reset successful. Please login with your new password.",
+              from: "reset"
+            }
+          });
         }, 2000);
       } else {
         setError(response.data.message || "Failed to reset password. Please try again.");

@@ -170,7 +170,7 @@ const Checkout = () => {
         label: selectedAddress.label
       };
 
-      // Calculate order details
+      // Calculate order details with discount
       const orderDetails = {
         items: cartItems.map(item => ({
           productId: item.productId || item._id,
@@ -181,8 +181,8 @@ const Checkout = () => {
         subtotal: subtotal,
         shipping: shipping,
         tax: tax,
-        discount: discount || 0,
-        totalAmount: total
+        discount: discount,  // Include discount in order details
+        totalAmount: total   // Use the total that includes discount
       };
 
       console.log('Sending order details:', orderDetails); // Debug log
@@ -194,13 +194,22 @@ const Checkout = () => {
         throw new Error(data.message || 'Failed to create order');
       }
 
+      // Ensure Razorpay amount matches our calculated total (in paise)
+      const razorpayAmount = Math.round(total * 100); // Convert to paise
+      if (data.razorpayOrder.amount !== razorpayAmount) {
+        console.warn('Amount mismatch:', {
+          expected: razorpayAmount,
+          received: data.razorpayOrder.amount
+        });
+      }
+
       // Configure Razorpay payment options
       const options = {
         key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-        amount: data.razorpayOrder.amount, // Amount from server in paise
+        amount: razorpayAmount, // Use our calculated total instead of server amount
         currency: data.razorpayOrder.currency,
         name: 'Handcraft',
-        description: 'Payment for your order',
+        description: `Payment for order (Includes ₹${discount} discount)`,
         order_id: data.razorpayOrder.id,
         handler: async function (response) {
           try {
@@ -209,7 +218,8 @@ const Checkout = () => {
             const verificationResponse = await axiosInstance.post('/api/orders/verify', {
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature
+              razorpay_signature: response.razorpay_signature,
+              amount: razorpayAmount // Include the amount for verification
             });
 
             if (verificationResponse.data.success) {

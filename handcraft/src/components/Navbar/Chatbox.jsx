@@ -5,6 +5,57 @@ import { io } from "socket.io-client";
 import axiosInstance from "../../axiosInstance";
 import { getAuthToken } from "../../utils/auth";
 import styles from "./Chatbox.module.css";
+import { css } from '@emotion/react';
+import styled from '@emotion/styled';
+
+const fadeIn = css`
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+`;
+
+const messageSlide = css`
+  @keyframes messageSlide {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+`;
+
+const pulseAnimation = css`
+  @keyframes pulse {
+    0% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.05);
+      opacity: 0.8;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+`;
+
+const AnimatedContainer = styled.div`
+  ${fadeIn}
+  ${messageSlide}
+  ${pulseAnimation}
+`;
 
 const Chatbox = () => {
   const [chats, setChats] = useState([]);
@@ -20,7 +71,10 @@ const Chatbox = () => {
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [isTyping, setIsTyping] = useState(false);
   const [userRole, setUserRole] = useState('');
+  const [userId, setUserId] = useState('');
   const typingTimeoutRef = useRef(null);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [chatLoadingStates, setChatLoadingStates] = useState({});
 
   const socket = useRef(null);
   const messageEndRef = useRef(null);
@@ -28,16 +82,33 @@ const Chatbox = () => {
   const location = useLocation();
   const token = getAuthToken();
 
-  // Check user role on component mount
+  // Decode JWT token to get user info
   useEffect(() => {
-    const role = localStorage.getItem('userRole');
-    setUserRole(role || '');
-    
-    // Redirect admin users away from messages
-    if (role === 'admin') {
-      navigate('/dashboard');
+    if (!token) {
+      setError('Authentication required');
+      return;
     }
-  }, [navigate]);
+
+    try {
+      // Decode the JWT token 
+      const base64Url = token.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => 
+        '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+      ).join(''));
+      
+      const decoded = JSON.parse(jsonPayload);
+      
+      // Set user info from token
+      setUserId(decoded.id);
+      setUserRole(decoded.role);
+      
+      console.log('User info from token:', { id: decoded.id, role: decoded.role });
+    } catch (error) {
+      console.error('Error decoding token:', error);
+      setError('Invalid authentication token');
+    }
+  }, [token]);
 
   // If user is admin, show access denied
   if (userRole === 'admin') {
@@ -59,29 +130,60 @@ const Chatbox = () => {
 
   // Initialize socket connection
   useEffect(() => {
-    // Only connect if user is logged in
-    if (!token) return;
+    if (!token || !userId || !userRole) return;
+
+    let reconnectTimer;
+    const maxReconnectAttempts = 5;
+    let currentReconnectAttempts = 0;
 
     const initializeSocket = () => {
       try {
-        // Connect to socket server
+        if (socket.current) {
+          socket.current.disconnect();
+        }
+
         socket.current = io("http://localhost:7777", {
-          reconnectionAttempts: 5,
+          reconnectionAttempts: maxReconnectAttempts,
           reconnectionDelay: 1000,
           reconnectionDelayMax: 5000,
           timeout: 20000,
-          auth: { token },
+          auth: { 
+            token,
+            userId,
+            role: userRole
+          },
           withCredentials: true,
-          transports: ['websocket', 'polling'] // Try WebSocket first, fallback to polling
+          transports: ['websocket', 'polling']
         });
-        
-        // Setup socket event listeners
+
+        socket.current.on("connect_error", (error) => {
+          console.error("Socket connection error:", error);
+          setSocketConnected(false);
+          setConnected(false);
+          
+          if (currentReconnectAttempts < maxReconnectAttempts) {
+            currentReconnectAttempts++;
+            setError(`Connection error. Attempting to reconnect... (${currentReconnectAttempts}/${maxReconnectAttempts})`);
+            
+            clearTimeout(reconnectTimer);
+            reconnectTimer = setTimeout(() => {
+              console.log(`Attempting reconnection ${currentReconnectAttempts}/${maxReconnectAttempts}`);
+              socket.current.connect();
+            }, 2000);
+          } else {
+            setError("Could not establish connection. Please refresh the page.");
+            setupPollingFallback();
+          }
+        });
+
         socket.current.on("connect", () => {
           console.log("Socket connected");
           setSocketConnected(true);
-          setReconnectAttempts(0);
+          setConnected(true);
+          currentReconnectAttempts = 0;
+          setError(null);
           
-          // Authenticate with token
+          // Authenticate socket connection
           socket.current.emit("authenticate", token);
         });
         
@@ -92,6 +194,17 @@ const Chatbox = () => {
             
             // Store user ID in socket for reference
             socket.current.userId = response.userId;
+            
+            // Join chat room if there's a chatId in URL
+            const searchParams = new URLSearchParams(location.search);
+            const chatId = searchParams.get('chatId');
+            if (chatId) {
+              const chat = chats.find(c => c._id === chatId);
+              if (chat) {
+                setSelectedChat(chat);
+                socket.current.emit("joinChat", chatId);
+              }
+            }
           } else {
             console.error("Socket authentication failed", response.error);
             setError("Authentication failed. Please refresh the page.");
@@ -210,14 +323,6 @@ const Chatbox = () => {
           }
         });
         
-        socket.current.on("connect_error", (error) => {
-          console.error("Socket connection error:", error);
-          setSocketConnected(false);
-          setConnected(false);
-          setError("Connection error. Attempting to reconnect...");
-          setReconnectAttempts(prev => prev + 1);
-        });
-        
         socket.current.on("disconnect", () => {
           console.log("Socket disconnected");
           setSocketConnected(false);
@@ -228,14 +333,19 @@ const Chatbox = () => {
           console.error("Socket error:", error);
           setError("Communication error. Please try again.");
         });
+
+        // Add leaveChat event handler
+        socket.current.on("leftChat", (chatId) => {
+          console.log(`Left chat room: ${chatId}`);
+        });
+
+        // Add joinChat event handler
+        socket.current.on("joinedChat", (chatId) => {
+          console.log(`Joined chat room: ${chatId}`);
+        });
       } catch (error) {
         console.error("Error initializing socket:", error);
-        setSocketConnected(false);
-        setConnected(false);
-        setError("Failed to connect to chat service. Using fallback polling method.");
-        
-        // Setup polling as fallback
-        setupPollingFallback();
+        setError("Failed to initialize chat. Please refresh the page.");
       }
     };
     
@@ -268,12 +378,9 @@ const Chatbox = () => {
     
     // Cleanup socket connection on unmount
     return () => {
-      try {
-        if (socket.current && typeof socket.current.disconnect === 'function') {
-          socket.current.disconnect();
-        }
-      } catch (err) {
-        console.error("Error disconnecting socket:", err);
+      clearTimeout(reconnectTimer);
+      if (socket.current) {
+        socket.current.disconnect();
       }
       
       // Clear any active timeouts
@@ -281,7 +388,7 @@ const Chatbox = () => {
         clearTimeout(typingTimeoutRef.current);
       }
     };
-  }, [token, reconnectAttempts, navigate, selectedChat]);
+  }, [token, userId, userRole]);
 
   // Fetch chats from API
   useEffect(() => {
@@ -313,21 +420,6 @@ const Chatbox = () => {
     
     return () => clearInterval(refreshInterval);
   }, [token]);
-
-  // Join chat room when a chat is selected
-  useEffect(() => {
-    if (socket.current && connected && selectedChat) {
-      socket.current.emit("joinChat", selectedChat._id);
-      
-      // Mark as read
-      if (selectedChat.messages.length > 0) {
-        socket.current.emit("markAsRead", selectedChat._id);
-        
-        // Also call API to ensure it's marked as read
-        markChatAsRead(selectedChat._id);
-      }
-    }
-  }, [selectedChat, connected]);
 
   // Scroll to bottom when new messages arrive
   useEffect(() => {
@@ -386,12 +478,55 @@ const Chatbox = () => {
     }
   };
 
-  const handleChatSelect = (chat) => {
-    setSelectedChat(chat);
-    
-    // Mark as read when selected
-    if (chat.messages.length > 0) {
-      markChatAsRead(chat._id);
+  // Handle chat selection
+  const handleChatSelect = async (chat) => {
+    try {
+      setIsTransitioning(true);
+      setChatLoadingStates(prev => ({ ...prev, [chat._id]: true }));
+
+      // Leave current chat room if exists
+      if (selectedChat && socket.current) {
+        console.log(`Leaving chat room: ${selectedChat._id}`);
+        socket.current.emit("leaveChat", selectedChat._id);
+        // Wait for leave confirmation
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // Fade out current chat
+      if (selectedChat) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+
+      // Update selected chat
+      setSelectedChat(chat);
+      
+      // Mark as read when selected
+      if (chat.messages.length > 0) {
+        await markChatAsRead(chat._id);
+      }
+
+      // Join new chat room
+      if (socket.current) {
+        console.log(`Joining chat room: ${chat._id}`);
+        socket.current.emit("joinChat", chat._id);
+        // Wait for join confirmation
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // Smooth transition in
+      await new Promise(resolve => setTimeout(resolve, 150));
+      setIsTransitioning(false);
+      setChatLoadingStates(prev => ({ ...prev, [chat._id]: false }));
+
+      // Update URL with chat ID
+      const newUrl = new URL(window.location.href);
+      newUrl.searchParams.set('chatId', chat._id);
+      window.history.pushState({}, '', newUrl);
+    } catch (err) {
+      console.error("Error switching chats:", err);
+      setIsTransitioning(false);
+      setChatLoadingStates(prev => ({ ...prev, [chat._id]: false }));
+      setError("Failed to switch chat. Please try again.");
     }
   };
 
@@ -503,6 +638,11 @@ const Chatbox = () => {
     }
   };
 
+  // Add CSS classes for transitions
+  const chatContentClass = `flex-1 p-4 overflow-y-auto transition-opacity duration-150 ${
+    isTransitioning ? 'opacity-0' : 'opacity-100'
+  }`;
+
   if (!token) {
     return (
       <div className="flex flex-col h-screen justify-center items-center">
@@ -519,7 +659,7 @@ const Chatbox = () => {
   }
 
   return (
-    <div className="container mx-auto my-8 px-4">
+    <AnimatedContainer className="container mx-auto my-8 px-4">
       <h1 className="text-3xl font-bold mb-6">
         Messages
         {unreadCount > 0 && (
@@ -544,7 +684,7 @@ const Chatbox = () => {
 
       <div className="flex flex-col bg-white rounded-lg shadow-lg lg:flex-row overflow-hidden" style={{height: 'calc(100vh - 200px)'}}>
         {/* Chat list */}
-        <div className="border-gray-200 border-r lg:w-1/3 overflow-y-auto" style={{maxHeight: 'calc(100vh - 200px)'}}>
+        <div className="border-gray-200 border-r lg:w-1/3 overflow-y-auto bg-gray-50" style={{maxHeight: 'calc(100vh - 200px)'}}>
           {loading ? (
             <div className="flex h-full justify-center items-center">
               <FaSpinner className={`${styles.spinnerIcon} text-indigo-600 text-2xl`} />
@@ -554,21 +694,36 @@ const Chatbox = () => {
               {error}
             </div>
           ) : chats.length === 0 ? (
-            <div className="p-4 text-center text-gray-500">
-              No conversations yet
+            <div className="p-8 text-center">
+              <div className="bg-white rounded-lg p-6 shadow-lg transform transition-all duration-300 hover:scale-105">
+                <div className="text-gray-400 mb-4">
+                  <FaUserCircle className="w-16 h-16 mx-auto" />
+                </div>
+                <p className="text-gray-700 font-medium mb-2">No conversations yet</p>
+                <p className="text-gray-500 text-sm">Start chatting by visiting a product page</p>
+              </div>
             </div>
           ) : (
-            <ul>
-              {chats.map((chat) => {
+            <ul className="divide-y divide-gray-200">
+              {chats.map((chat, index) => {
                 const otherUser = getOtherParticipant(chat);
                 const userUnreadCount = isBuyer(chat) ? chat.unreadCount.buyer : chat.unreadCount.seller;
                 const lastMessage = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
+                const isSelected = selectedChat && selectedChat._id === chat._id;
+                const isLoading = chatLoadingStates[chat._id];
                 
                 return (
                   <li 
                     key={chat._id}
-                    className={`p-4 border-b border-gray-200 cursor-pointer ${selectedChat && selectedChat._id === chat._id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''} ${userUnreadCount > 0 ? 'bg-blue-50 font-medium' : ''}`}
+                    className={`p-4 cursor-pointer transform transition-all duration-300 
+                      ${isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500 shadow-inner' : 'hover:bg-gray-100'} 
+                      ${userUnreadCount > 0 ? 'bg-blue-50 font-medium' : ''}
+                      ${isLoading ? 'animate-pulse' : ''}
+                    `}
                     onClick={() => handleChatSelect(chat)}
+                    style={{
+                      animation: `fadeIn 0.3s ease-in-out ${index * 0.1}s both`
+                    }}
                   >
                     <div className="flex gap-3 items-start">
                       <div className="flex-shrink-0 relative">
@@ -576,21 +731,25 @@ const Chatbox = () => {
                           <img 
                             src={otherUser.profileImage} 
                             alt={otherUser.name} 
-                            className="h-12 rounded-full w-12 object-cover"
+                            className="h-12 w-12 rounded-full object-cover border-2 border-white shadow-lg transform transition-all duration-300 hover:scale-110"
                           />
                         ) : (
-                          <FaUserCircle className="h-12 text-gray-400 w-12" />
+                          <div className="h-12 w-12 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center shadow-lg transform transition-all duration-300 hover:scale-110">
+                            <FaUserCircle className="h-8 w-8 text-gray-400" />
+                          </div>
                         )}
                         
                         {/* Online indicator */}
                         {isUserOnline(otherUser._id) && (
-                          <span className="bg-green-500 border-2 border-white h-3 rounded-full w-3 absolute bottom-0 right-0"></span>
+                          <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-green-500 border-2 border-white transform transition-transform duration-300 hover:scale-125"></span>
                         )}
                       </div>
                       
                       <div className="flex-1 min-w-0">
                         <div className="flex justify-between items-baseline">
-                          <span className="text-gray-900 font-medium truncate">{otherUser.name}</span>
+                          <span className="text-gray-900 font-medium truncate hover:text-blue-600 transition-colors duration-300">
+                            {otherUser.name}
+                          </span>
                           {lastMessage && (
                             <span className="text-gray-500 text-xs">
                               {formatTimestamp(lastMessage.createdAt)}
@@ -612,7 +771,7 @@ const Chatbox = () => {
                               </span>
                               
                               {userUnreadCount > 0 && (
-                                <span className="bg-blue-600 rounded-full text-center text-white text-xs min-w-[20px] px-2 py-1">
+                                <span className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-full text-center text-white text-xs min-w-[20px] px-2 py-1 shadow-lg transform transition-all duration-300 hover:scale-110">
                                   {userUnreadCount}
                                 </span>
                               )}
@@ -624,8 +783,22 @@ const Chatbox = () => {
                           )}
                         </div>
                         
-                        <div className="text-gray-500 text-xs mt-1">
-                          {chat.product.name} - {formatPrice(chat.product.price)}
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex-shrink-0 h-8 w-8 rounded overflow-hidden">
+                            <img 
+                              src={chat.product.image} 
+                              alt={chat.product.name}
+                              className="h-full w-full object-cover transform transition-all duration-300 hover:scale-110"
+                            />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-gray-500 text-xs truncate">
+                              {chat.product.name}
+                            </p>
+                            <p className="text-blue-600 text-xs font-medium">
+                              {formatPrice(chat.product.price)}
+                            </p>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -675,11 +848,11 @@ const Chatbox = () => {
               </div>
 
               {/* Messages */}
-              <div className="flex-1 p-4 overflow-y-auto">
+              <div className={chatContentClass}>
                 {selectedChat.messages.length === 0 ? (
-                  <div className="flex flex-col h-full justify-center text-gray-500 items-center">
-                    <p className="text-lg">No messages yet</p>
-                    <p className="text-sm mt-1">Start the conversation by sending a message</p>
+                  <div className="flex flex-col h-full justify-center text-gray-500 items-center transition-all duration-300 transform hover:scale-105">
+                    <p className="text-lg font-medium">No messages yet</p>
+                    <p className="text-sm mt-1 text-gray-400">Start the conversation by sending a message</p>
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -692,19 +865,21 @@ const Chatbox = () => {
                       return (
                         <React.Fragment key={index}>
                           {showTimestamp && (
-                            <div className="flex justify-center my-4">
-                              <span className="bg-gray-200 rounded-full text-gray-600 text-xs px-3 py-1">
+                            <div className="flex justify-center my-4 animate-fadeIn">
+                              <span className="bg-gray-200 rounded-full text-gray-600 text-xs px-3 py-1 transform transition-all duration-300 hover:scale-105">
                                 {getRelativeTime(msg.createdAt)}
                               </span>
                             </div>
                           )}
                           <div
-                            className={`flex ${isCurrentUser ? 'justify-end' : 'justify-start'}`}
+                            className={`flex ${isCurrentUser ? 'justify-end' : 'justify-start'} animate-messageSlide`}
                           >
                             <div
-                              className={`max-w-[80%] px-4 py-2 rounded-lg ${
-                                isCurrentUser ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800'
-                              }`}
+                              className={`max-w-[80%] px-4 py-2 rounded-lg transform transition-all duration-300 hover:scale-[1.02] ${
+                                isCurrentUser 
+                                  ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-blue-100' 
+                                  : 'bg-gray-100 text-gray-800 shadow-gray-100'
+                              } shadow-lg`}
                             >
                               <p className="break-words">{msg.content}</p>
                               <div className={`flex items-center text-xs mt-1 ${
@@ -712,7 +887,7 @@ const Chatbox = () => {
                               }`}>
                                 {formatTimestamp(msg.createdAt)}
                                 {isCurrentUser && (
-                                  <span className="ml-1">
+                                  <span className="ml-1 transition-transform duration-300 hover:scale-110">
                                     {msg.readBy.includes(getOtherParticipant(selectedChat)._id) ? 
                                       <FaCheckDouble size={12} className="text-blue-300" /> : 
                                       <FaCheck size={12} className="text-blue-200" />}
@@ -727,8 +902,8 @@ const Chatbox = () => {
                     
                     {/* Typing indicator */}
                     {isUserTyping(selectedChat._id) && (
-                      <div className="flex justify-start">
-                        <div className="bg-gray-100 rounded-lg px-4 py-2">
+                      <div className="flex justify-start animate-fadeIn">
+                        <div className="bg-gray-100 rounded-lg px-4 py-2 shadow-lg transform transition-all duration-300 hover:scale-105">
                           <div className="flex space-x-1">
                             <div className="bg-gray-500 h-2 rounded-full w-2 animate-bounce"></div>
                             <div className="bg-gray-500 h-2 rounded-full w-2 animate-bounce" style={{animationDelay: '0.2s'}}></div>
@@ -744,24 +919,26 @@ const Chatbox = () => {
               </div>
 
               {/* Input box */}
-              <div className="bg-white border-gray-200 border-t p-4">
-                <div className="flex items-center">
+              <div className="bg-white border-gray-200 border-t p-4 transition-all duration-300">
+                <div className="flex items-center space-x-2">
                   <input
                     type="text"
                     value={input}
                     onChange={handleInputChange}
                     onKeyPress={(e) => e.key === "Enter" && sendMessage()}
                     placeholder="Type a message..."
-                    className="flex-1 border border-gray-300 rounded-l-lg focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 px-4 py-2"
+                    className="flex-1 border border-gray-300 rounded-lg focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 px-4 py-2 transition-all duration-300 hover:shadow-md"
                   />
                   <button
                     onClick={sendMessage}
                     disabled={!connected || !input.trim()}
-                    className={`px-4 py-2 rounded-r-lg flex items-center justify-center ${
-                      !connected || !input.trim() ? 'bg-gray-300 text-gray-500' : 'bg-blue-600 text-white'
+                    className={`px-6 py-2 rounded-lg flex items-center justify-center transition-all duration-300 transform hover:scale-105 ${
+                      !connected || !input.trim() 
+                        ? 'bg-gray-300 text-gray-500' 
+                        : 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg hover:shadow-blue-100'
                     }`}
                   >
-                    {connected ? <FaPaperPlane /> : <FaSpinner className="animate-spin" />}
+                    {connected ? <FaPaperPlane className="transform hover:rotate-45 transition-transform duration-300" /> : <FaSpinner className="animate-spin" />}
                   </button>
                 </div>
               </div>
@@ -775,7 +952,7 @@ const Chatbox = () => {
           )}
         </div>
       </div>
-    </div>
+    </AnimatedContainer>
   );
 };
 
