@@ -84,7 +84,8 @@ exports.createOrder = async (req, res) => {
     );
     const shippingCost = 99;
     const taxAmount = Math.round(subtotal * 0.18); // 18% GST
-    const finalAmount = subtotal + shippingCost + taxAmount;
+    const discount = subtotal > 5000 ? 500 : 0; // Apply discount if subtotal > 5000
+    const finalAmount = subtotal + shippingCost + taxAmount - discount;
 
     // Create Razorpay order
     const razorpayOrder = await razorpay.orders.create({
@@ -110,7 +111,7 @@ exports.createOrder = async (req, res) => {
       subtotal: subtotal,
       shippingCost: shippingCost,
       taxAmount: taxAmount,
-      discount: 0,
+      discount: discount,
       razorpayOrderId: razorpayOrder.id,
       status: 'pending',
       orderDate: new Date(),

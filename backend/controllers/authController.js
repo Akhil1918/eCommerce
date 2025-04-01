@@ -297,49 +297,48 @@ exports.login = async (req, res) => {
         reason: user.sellerInfo.rejectionReason
       });
     }
+
+    // Check if seller is not approved
+    if (user.role === 'seller' && user.sellerInfo && !user.sellerInfo.isApproved) {
+      return res.status(403).json({
+        success: false,
+        message: 'Your seller application is pending approval. Please wait for admin approval.',
+        status: 'pending'
+      });
+    }
     
-    // Check password
-    const isPasswordMatch = await user.comparePassword(password);
-    
-    if (!isPasswordMatch) {
+    // Verify password
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Incorrect password'
+        message: 'Invalid password'
       });
     }
     
     // Generate token
     const token = user.generateAuthToken();
     
+    // Remove password from response
+    const userResponse = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      sellerInfo: user.sellerInfo
+    };
+    
     res.status(200).json({
       success: true,
-      message: 'Login successful',
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        status: user.status,
-        avatar: user.avatar
-      }
+      user: userResponse
     });
   } catch (error) {
     console.error('Login error:', error);
-    
-    // Handle specific error types
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid login data',
-        error: error.message
-      });
-    }
-    
     res.status(500).json({
       success: false,
-      message: 'Login failed. Please try again later.',
-      error: error.message
+      message: 'An error occurred during login'
     });
   }
 };

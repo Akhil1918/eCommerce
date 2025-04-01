@@ -457,11 +457,13 @@ const User = () => {
                       <div className="flex items-center">
                         <div className="w-2 h-2 bg-red-500 rounded-full mr-2"></div>
                         <span className="text-red-600 text-sm font-medium">Rejected</span>
+                        <p className="text-xs text-red-500 ml-2">({user.sellerInfo.rejectionReason})</p>
                       </div>
                     ) : (
                       <div className="flex items-center">
                         <div className="w-2 h-2 bg-yellow-500 rounded-full mr-2"></div>
-                        <span className="text-yellow-600 text-sm font-medium">Awaiting Approval</span>
+                        <span className="text-yellow-600 text-sm font-medium">Pending Approval</span>
+                        <p className="text-xs text-yellow-500 ml-2">(Cannot login until approved)</p>
                       </div>
                     )}
                   </div>
